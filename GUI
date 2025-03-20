@@ -1,0 +1,791 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
+import threading
+import os
+import json
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import pandas as pd
+from datetime import datetime
+from collections import Counter
+
+# Import the LogAnalyzer class
+from paste import LogAnalyzer  # Assuming the file is named paste.py
+
+class LogAnalyzerGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Log Analyzer Tool")
+        self.root.geometry("1000x700")
+        self.root.minsize(900, 600)
+        
+        # Initialize the LogAnalyzer
+        self.analyzer = LogAnalyzer()
+        
+        # Create main frame
+        self.main_frame = ttk.Frame(root)
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Create notebook (tabbed interface)
+        self.notebook = ttk.Notebook(self.main_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Create tabs
+        self.setup_tab = ttk.Frame(self.notebook)
+        self.analysis_tab = ttk.Frame(self.notebook)
+        self.search_tab = ttk.Frame(self.notebook)
+        self.reports_tab = ttk.Frame(self.notebook)
+        self.visualization_tab = ttk.Frame(self.notebook)
+        self.anomalies_tab = ttk.Frame(self.notebook)
+        
+        self.notebook.add(self.setup_tab, text="Setup")
+        self.notebook.add(self.analysis_tab, text="Analysis")
+        self.notebook.add(self.search_tab, text="Search")
+        self.notebook.add(self.reports_tab, text="Reports")
+        self.notebook.add(self.visualization_tab, text="Visualizations")
+        self.notebook.add(self.anomalies_tab, text="Anomalies")
+        
+        # Initialize tabs
+        self.init_setup_tab()
+        self.init_analysis_tab()
+        self.init_search_tab()
+        self.init_reports_tab()
+        self.init_visualization_tab()
+        self.init_anomalies_tab()
+        
+        # Status bar
+        self.status_var = tk.StringVar()
+        self.status_var.set("Ready")
+        self.status_bar = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Log files and directories
+        self.log_files = []
+        self.log_directories = []
+        
+        # Currently running analysis thread
+        self.analysis_thread = None
+        
+        # Initialize figure for matplotlib
+        self.fig = None
+        self.canvas = None
+        
+    def init_setup_tab(self):
+        # Create frames
+        config_frame = ttk.LabelFrame(self.setup_tab, text="Configuration")
+        config_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Configuration file
+        ttk.Label(config_frame, text="Configuration File:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.config_path_var = tk.StringVar()
+        ttk.Entry(config_frame, textvariable=self.config_path_var, width=50).grid(row=0, column=1, padx=5, pady=5)
+        ttk.Button(config_frame, text="Browse", command=self.browse_config).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Button(config_frame, text="Load Config", command=self.load_config).grid(row=0, column=3, padx=5, pady=5)
+        
+        # Log directories
+        ttk.Label(config_frame, text="Log Directories:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.log_dirs_frame = ttk.Frame(config_frame)
+        self.log_dirs_frame.grid(row=1, column=1, columnspan=2, sticky=tk.W+tk.E, padx=5, pady=5)
+        
+        self.log_dirs_listbox = tk.Listbox(self.log_dirs_frame, height=5, width=50)
+        self.log_dirs_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(self.log_dirs_frame, orient="vertical", command=self.log_dirs_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_dirs_listbox.configure(yscrollcommand=scrollbar.set)
+        
+        dirs_buttons_frame = ttk.Frame(config_frame)
+        dirs_buttons_frame.grid(row=1, column=3, padx=5, pady=5)
+        
+        ttk.Button(dirs_buttons_frame, text="Add", command=self.add_log_dir).pack(fill=tk.X, pady=2)
+        ttk.Button(dirs_buttons_frame, text="Remove", command=self.remove_log_dir).pack(fill=tk.X, pady=2)
+        
+        # Output directory
+        ttk.Label(config_frame, text="Output Directory:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.output_dir_var = tk.StringVar()
+        self.output_dir_var.set(self.analyzer.config["output_directory"])
+        ttk.Entry(config_frame, textvariable=self.output_dir_var, width=50).grid(row=2, column=1, padx=5, pady=5)
+        ttk.Button(config_frame, text="Browse", command=self.browse_output_dir).grid(row=2, column=2, padx=5, pady=5)
+        
+        # Retention days
+        ttk.Label(config_frame, text="Log Retention (days):").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.retention_days_var = tk.IntVar()
+        self.retention_days_var.set(self.analyzer.config["retention_days"])
+        ttk.Spinbox(config_frame, from_=1, to=365, textvariable=self.retention_days_var, width=10).grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        # Alert threshold
+        ttk.Label(config_frame, text="Failed Login Threshold:").grid(row=4, column=0, sticky=tk.W, padx=5, pady=5)
+        self.login_threshold_var = tk.IntVar()
+        self.login_threshold_var.set(self.analyzer.config["alert_rules"]["failed_login_threshold"])
+        ttk.Spinbox(config_frame, from_=1, to=100, textvariable=self.login_threshold_var, width=10).grid(row=4, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        # Save button
+        ttk.Button(config_frame, text="Save Configuration", command=self.save_config).grid(row=5, column=0, columnspan=4, pady=20)
+        
+        # Update the log directories listbox
+        for directory in self.analyzer.config["log_directories"]:
+            self.log_dirs_listbox.insert(tk.END, directory)
+            self.log_directories.append(directory)
+    
+    def init_analysis_tab(self):
+        # Create frames
+        files_frame = ttk.LabelFrame(self.analysis_tab, text="Log Files")
+        files_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Log files selection
+        ttk.Label(files_frame, text="File Pattern:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.file_pattern_var = tk.StringVar()
+        self.file_pattern_var.set("*.log")
+        ttk.Entry(files_frame, textvariable=self.file_pattern_var, width=20).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        ttk.Button(files_frame, text="Collect Log Files", command=self.collect_logs).grid(row=0, column=2, padx=5, pady=5)
+        
+        # Files listbox
+        self.files_frame_inner = ttk.Frame(files_frame)
+        self.files_frame_inner.grid(row=1, column=0, columnspan=3, sticky=tk.W+tk.E+tk.N+tk.S, padx=5, pady=5)
+        
+        self.files_listbox = tk.Listbox(self.files_frame_inner, height=10, width=80, selectmode=tk.EXTENDED)
+        self.files_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        files_scrollbar = ttk.Scrollbar(self.files_frame_inner, orient="vertical", command=self.files_listbox.yview)
+        files_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.files_listbox.configure(yscrollcommand=files_scrollbar.set)
+        
+        # Analysis buttons
+        buttons_frame = ttk.Frame(files_frame)
+        buttons_frame.grid(row=2, column=0, columnspan=3, pady=10)
+        
+        ttk.Button(buttons_frame, text="Add Files", command=self.add_log_files).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="Remove Selected", command=self.remove_selected_files).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="Start Analysis", command=self.start_analysis).pack(side=tk.LEFT, padx=5)
+        
+        # Progress frame
+        progress_frame = ttk.LabelFrame(self.analysis_tab, text="Analysis Progress")
+        progress_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        self.progress_var = tk.DoubleVar()
+        self.progress = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
+        self.progress.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Results frame
+        results_frame = ttk.LabelFrame(self.analysis_tab, text="Analysis Results")
+        results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.results_text = scrolledtext.ScrolledText(results_frame, height=10)
+        self.results_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+    
+    def init_search_tab(self):
+        # Create frames
+        search_frame = ttk.LabelFrame(self.search_tab, text="Search Criteria")
+        search_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Search fields
+        ttk.Label(search_frame, text="IP Address:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.search_ip_var = tk.StringVar()
+        ttk.Entry(search_frame, textvariable=self.search_ip_var, width=20).grid(row=0, column=1, padx=5, pady=5)
+        
+        ttk.Label(search_frame, text="Log Type:").grid(row=0, column=2, sticky=tk.W, padx=5, pady=5)
+        self.search_type_var = tk.StringVar()
+        self.search_type_combo = ttk.Combobox(search_frame, textvariable=self.search_type_var, width=15)
+        self.search_type_combo['values'] = ('apache', 'ssh', 'windows', 'generic')
+        self.search_type_combo.grid(row=0, column=3, padx=5, pady=5)
+        
+        ttk.Label(search_frame, text="Event:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.search_event_var = tk.StringVar()
+        self.search_event_combo = ttk.Combobox(search_frame, textvariable=self.search_event_var, width=15)
+        self.search_event_combo['values'] = ('failed_login', 'successful_login')
+        self.search_event_combo.grid(row=1, column=1, padx=5, pady=5)
+        
+        ttk.Label(search_frame, text="Username:").grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
+        self.search_username_var = tk.StringVar()
+        ttk.Entry(search_frame, textvariable=self.search_username_var, width=20).grid(row=1, column=3, padx=5, pady=5)
+        
+        ttk.Button(search_frame, text="Search Logs", command=self.search_logs).grid(row=2, column=0, columnspan=4, pady=10)
+        
+        # Results frame
+        results_frame = ttk.LabelFrame(self.search_tab, text="Search Results")
+        results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.search_results_text = scrolledtext.ScrolledText(results_frame)
+        self.search_results_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+    
+    def init_reports_tab(self):
+        # Create frames
+        report_frame = ttk.LabelFrame(self.reports_tab, text="Generate Report")
+        report_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(report_frame, text="Output File:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.report_file_var = tk.StringVar()
+        ttk.Entry(report_frame, textvariable=self.report_file_var, width=50).grid(row=0, column=1, padx=5, pady=5)
+        ttk.Button(report_frame, text="Browse", command=self.browse_report_file).grid(row=0, column=2, padx=5, pady=5)
+        
+        ttk.Button(report_frame, text="Generate Report", command=self.generate_report).grid(row=1, column=0, columnspan=3, pady=10)
+        
+        # Statistics frame
+        stats_frame = ttk.LabelFrame(self.reports_tab, text="Statistics")
+        stats_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.stats_text = scrolledtext.ScrolledText(stats_frame)
+        self.stats_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        ttk.Button(stats_frame, text="Show Statistics", command=self.show_statistics).pack(pady=5)
+    
+    def init_visualization_tab(self):
+        # Create visualization options
+        options_frame = ttk.Frame(self.visualization_tab)
+        options_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(options_frame, text="Visualization Type:").pack(side=tk.LEFT, padx=5)
+        self.viz_type_var = tk.StringVar()
+        self.viz_type_var.set("log_distribution")
+        viz_type_combo = ttk.Combobox(options_frame, textvariable=self.viz_type_var, width=20, state="readonly")
+        viz_type_combo['values'] = ('log_distribution', 'alert_severity', 'alerts_by_type', 'timeline')
+        viz_type_combo.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(options_frame, text="Generate Visualization", command=self.generate_visualization).pack(side=tk.LEFT, padx=20)
+        ttk.Button(options_frame, text="Save Visualization", command=self.save_visualization).pack(side=tk.LEFT, padx=5)
+        
+        # Canvas for matplotlib
+        self.viz_frame = ttk.LabelFrame(self.visualization_tab, text="Visualization")
+        self.viz_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.canvas_frame = ttk.Frame(self.viz_frame)
+        self.canvas_frame.pack(fill=tk.BOTH, expand=True)
+    
+    def init_anomalies_tab(self):
+        # Create frames
+        anomalies_control_frame = ttk.Frame(self.anomalies_tab)
+        anomalies_control_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(anomalies_control_frame, text="Time Window (seconds):").pack(side=tk.LEFT, padx=5)
+        self.time_window_var = tk.IntVar()
+        self.time_window_var.set(3600)  # Default to 1 hour
+        ttk.Spinbox(anomalies_control_frame, from_=60, to=86400, textvariable=self.time_window_var, width=10).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(anomalies_control_frame, text="Detect Anomalies", command=self.detect_anomalies).pack(side=tk.LEFT, padx=20)
+        ttk.Button(anomalies_control_frame, text="Correlation Analysis", command=self.correlation_analysis).pack(side=tk.LEFT, padx=5)
+        
+        # Anomalies results
+        anomalies_frame = ttk.LabelFrame(self.anomalies_tab, text="Detected Anomalies")
+        anomalies_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.anomalies_text = scrolledtext.ScrolledText(anomalies_frame)
+        self.anomalies_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+    
+    # Setup tab functions
+    def browse_config(self):
+        filename = filedialog.askopenfilename(filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+        if filename:
+            self.config_path_var.set(filename)
+    
+    def load_config(self):
+        config_file = self.config_path_var.get()
+        if not config_file:
+            messagebox.showwarning("Warning", "No configuration file selected.")
+            return
+            
+        if not os.path.exists(config_file):
+            messagebox.showerror("Error", f"Configuration file not found: {config_file}")
+            return
+            
+        try:
+            # Reinitialize the analyzer with the new config
+            self.analyzer = LogAnalyzer(config_file)
+            
+            # Update UI with new config values
+            self.output_dir_var.set(self.analyzer.config["output_directory"])
+            self.retention_days_var.set(self.analyzer.config["retention_days"])
+            self.login_threshold_var.set(self.analyzer.config["alert_rules"]["failed_login_threshold"])
+            
+            # Update log directories listbox
+            self.log_dirs_listbox.delete(0, tk.END)
+            self.log_directories = []
+            for directory in self.analyzer.config["log_directories"]:
+                self.log_dirs_listbox.insert(tk.END, directory)
+                self.log_directories.append(directory)
+                
+            messagebox.showinfo("Info", "Configuration loaded successfully.")
+            self.status_var.set("Configuration loaded")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load configuration: {str(e)}")
+    
+    def add_log_dir(self):
+        directory = filedialog.askdirectory()
+        if directory:
+            self.log_dirs_listbox.insert(tk.END, directory)
+            self.log_directories.append(directory)
+    
+    def remove_log_dir(self):
+        selection = self.log_dirs_listbox.curselection()
+        if selection:
+            index = selection[0]
+            self.log_dirs_listbox.delete(index)
+            del self.log_directories[index]
+    
+    def browse_output_dir(self):
+        directory = filedialog.askdirectory()
+        if directory:
+            self.output_dir_var.set(directory)
+    
+    def save_config(self):
+        try:
+            # Update analyzer config with UI values
+            self.analyzer.config["log_directories"] = self.log_directories
+            self.analyzer.config["output_directory"] = self.output_dir_var.get()
+            self.analyzer.config["retention_days"] = self.retention_days_var.get()
+            self.analyzer.config["alert_rules"]["failed_login_threshold"] = self.login_threshold_var.get()
+            
+            # Ensure output directory exists
+            os.makedirs(self.analyzer.config["output_directory"], exist_ok=True)
+            
+            # Ask for save location
+            save_path = filedialog.asksaveasfilename(
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                initialdir=self.analyzer.config["output_directory"]
+            )
+            
+            if save_path:
+                with open(save_path, 'w') as f:
+                    json.dump(self.analyzer.config, f, indent=2)
+                    
+                messagebox.showinfo("Info", f"Configuration saved to {save_path}")
+                self.status_var.set("Configuration saved")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save configuration: {str(e)}")
+    
+    # Analysis tab functions
+    def collect_logs(self):
+        if not self.log_directories:
+            messagebox.showwarning("Warning", "No log directories configured.")
+            return
+            
+        try:
+            file_pattern = self.file_pattern_var.get()
+            collected_files = self.analyzer.collect_logs(file_pattern=file_pattern)
+            
+            self.files_listbox.delete(0, tk.END)
+            self.log_files = []
+            
+            for file in collected_files:
+                self.files_listbox.insert(tk.END, file)
+                self.log_files.append(file)
+                
+            self.status_var.set(f"Collected {len(collected_files)} log files")
+            messagebox.showinfo("Info", f"Collected {len(collected_files)} log files")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Error collecting log files: {str(e)}")
+    
+    def add_log_files(self):
+        files = filedialog.askopenfilenames(filetypes=[("Log files", "*.log"), ("Text files", "*.txt"), ("All files", "*.*")])
+        if files:
+            for file in files:
+                if file not in self.log_files:
+                    self.files_listbox.insert(tk.END, file)
+                    self.log_files.append(file)
+    
+    def remove_selected_files(self):
+        selection = self.files_listbox.curselection()
+        if selection:
+            # Remove in reverse order to avoid index shifting issues
+            for index in sorted(selection, reverse=True):
+                self.files_listbox.delete(index)
+                del self.log_files[index]
+    
+    def start_analysis(self):
+        if not self.log_files:
+            messagebox.showwarning("Warning", "No log files selected for analysis.")
+            return
+            
+        if self.analysis_thread and self.analysis_thread.is_alive():
+            messagebox.showwarning("Warning", "Analysis is already running.")
+            return
+            
+        # Clear previous results
+        self.results_text.delete(1.0, tk.END)
+        self.progress_var.set(0)
+        
+        # Start analysis in a separate thread
+        self.analysis_thread = threading.Thread(target=self.run_analysis)
+        self.analysis_thread.daemon = True
+        self.analysis_thread.start()
+        
+        self.status_var.set("Analysis started")
+    
+    def run_analysis(self):
+        try:
+            self.results_text.insert(tk.END, "Starting analysis...\n")
+            
+            # Reset analyzer state
+            self.analyzer.parsed_logs = []
+            self.analyzer.alerts = []
+            self.analyzer.statistics = {
+                "total_logs": 0,
+                "logs_by_source": Counter(),
+                "logs_by_type": Counter(),
+                "unique_ips": set(),
+                "unique_users": set(),
+                "error_counts": Counter()
+            }
+            
+            total_files = len(self.log_files)
+            for i, file in enumerate(self.log_files):
+                self.results_text.insert(tk.END, f"Processing file: {os.path.basename(file)}...\n")
+                self.root.update_idletasks()
+                
+                result = self.analyzer.process_log_file(file)
+                
+                # Update progress
+                progress = (i + 1) / total_files * 100
+                self.progress_var.set(progress)
+                self.root.update_idletasks()
+            
+            # Process remaining logs in the queue
+            self.results_text.insert(tk.END, "Processing log queue...\n")
+            self.analyzer.log_processor_worker()
+            
+            # Process alerts
+            self.results_text.insert(tk.END, "Processing alerts...\n")
+            self.analyzer.alert_processor_worker()
+            
+            # Show summary
+            stats = self.analyzer.generate_statistics()
+            self.results_text.insert(tk.END, "\nAnalysis completed!\n")
+            self.results_text.insert(tk.END, f"Total logs processed: {stats['total_logs']}\n")
+            self.results_text.insert(tk.END, f"Alerts generated: {stats['total_alerts']}\n")
+            self.results_text.insert(tk.END, f"Unique IPs: {len(stats['unique_ips'])}\n")
+            self.results_text.insert(tk.END, f"Unique users: {len(stats['unique_users'])}\n")
+            
+            if 'alerts_by_severity' in stats and stats['alerts_by_severity']:
+                self.results_text.insert(tk.END, "\nAlerts by severity:\n")
+                for severity, count in stats['alerts_by_severity'].items():
+                    self.results_text.insert(tk.END, f"  {severity}: {count}\n")
+            
+            self.status_var.set("Analysis completed")
+            
+        except Exception as e:
+            self.results_text.insert(tk.END, f"Error during analysis: {str(e)}\n")
+            self.status_var.set("Analysis failed")
+    
+    # Search tab functions
+    def search_logs(self):
+        if not hasattr(self.analyzer, 'parsed_logs') or not self.analyzer.parsed_logs:
+            messagebox.showwarning("Warning", "No logs have been analyzed yet.")
+            return
+            
+        # Build query from UI
+        query = {}
+        if self.search_ip_var.get():
+            query["ip"] = self.search_ip_var.get()
+        if self.search_type_var.get():
+            query["type"] = self.search_type_var.get()
+        if self.search_event_var.get():
+            query["event"] = self.search_event_var.get()
+        if self.search_username_var.get():
+            query["username"] = self.search_username_var.get()
+        
+        if not query:
+            messagebox.showwarning("Warning", "No search criteria specified.")
+            return
+            
+        results = self.analyzer.search_logs(query)
+        
+        # Display results
+        self.search_results_text.delete(1.0, tk.END)
+        self.search_results_text.insert(tk.END, f"Found {len(results)} matching logs:\n\n")
+        
+        for i, result in enumerate(results[:100]):  # Limit to 100 results for display
+            self.search_results_text.insert(tk.END, f"--- Result {i+1} ---\n")
+            for key, value in result.items():
+                if key != "raw":  # Skip raw log line for cleaner display
+                    self.search_results_text.insert(tk.END, f"{key}: {value}\n")
+            self.search_results_text.insert(tk.END, "\n")
+        
+        if len(results) > 100:
+            self.search_results_text.insert(tk.END, f"... and {len(results) - 100} more results.\n")
+            
+        self.status_var.set(f"Found {len(results)} matching logs")
+    
+    # Reports tab functions
+    def browse_report_file(self):
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            initialdir=self.analyzer.config["output_directory"]
+        )
+        if filename:
+            self.report_file_var.set(filename)
+    
+    def generate_report(self):
+        if not hasattr(self.analyzer, 'parsed_logs') or not self.analyzer.parsed_logs:
+            messagebox.showwarning("Warning", "No logs have been analyzed yet.")
+            return
+            
+        try:
+            output_file = self.report_file_var.get()
+            if not output_file:
+                # Generate default filename
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                output_file = f"{self.analyzer.config['output_directory']}/report-{timestamp}.json"
+                self.report_file_var.set(output_file)
+            
+            report_file = self.analyzer.generate_report(output_file)
+            
+            messagebox.showinfo("Info", f"Report generated successfully: {report_file}")
+            self.status_var.set("Report generated")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate report: {str(e)}")
+    
+    def show_statistics(self):
+        if not hasattr(self.analyzer, 'parsed_logs') or not self.analyzer.parsed_logs:
+            messagebox.showwarning("Warning", "No logs have been analyzed yet.")
+            return
+            
+        try:
+            stats = self.analyzer.generate_statistics()
+            
+            self.stats_text.delete(1.0, tk.END)
+            self.stats_text.insert(tk.END, "=== Log Analysis Statistics ===\n\n")
+            self.stats_text.insert(tk.END, f"Total logs processed: {stats['total_logs']}\n")
+            self.stats_text.insert(tk.END, f"Unique IP addresses: {len(stats['unique_ips'])}\n")
+            self.stats_text.insert(tk.END, f"Unique users: {len(stats['unique_users'])}\n")
+            
+            if 'total_alerts' in stats:
+                self.stats_text.insert(tk.END, f"\nTotal alerts: {stats['total_alerts']}\n")
+            
+            if 'alerts_by_severity' in stats and stats['alerts_by_severity']:
+                self.stats_text.insert(tk.END, "\nAlerts by severity:\n")
+                for severity, count in stats['alerts_by_severity'].items():
+                    self.stats_text.insert(tk.END, f"  {severity}: {count}\n")
+            
+            if 'logs_by_type' in stats and stats['logs_by_type']:
+                self.stats_text.insert(tk.END, "\nLogs by type:\n")
+                for log_type, count in stats['logs_by_type'].most_common():
+                    self.stats_text.insert(tk.END, f"  {log_type}: {count}\n")
+            
+            if 'logs_by_source' in stats and stats['logs_by_source']:
+                self.stats_text.insert(tk.END, "\nLogs by source:\n")
+                for source, count in stats['logs_by_source'].most_common(10):  # Top 10
+                    self.stats_text.insert(tk.END, f"  {source}: {count}\n")
+            
+            if 'error_counts' in stats and stats['error_counts']:
+                self.stats_text.insert(tk.END, "\nTop errors:\n")
+                for error, count in stats['error_counts'].most_common(10):  # Top 10
+                    self.stats_text.insert(tk.END, f"  {error}: {count}\n")
+            
+            self.status_var.set("Statistics displayed")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to display statistics: {str(e)}")
+    
+    # Visualization tab functions
+    def generate_visualization(self):
+        if not hasattr(self.analyzer, 'parsed_logs') or not self.analyzer.parsed_logs:
+            messagebox.showwarning("Warning", "No logs have been analyzed yet.")
+            return
+            
+        try:
+            viz_type = self.viz_type_var.get()
+            
+            # Clear previous plot
+            if self.fig:
+                plt.close(self.fig)
+            if self.canvas:
+                self.canvas.get_tk_widget().destroy()
+            
+            # Create new figure
+            self.fig, ax = plt.subplots(figsize=(8, 6))
+            
+            stats = self.analyzer.generate_statistics()
+            
+            if viz_type == "log_distribution":
+                # Create log distribution chart
+                if 'logs_by_type' in stats and stats['logs_by_type']:
+                    types = []
+                    counts = []
+                    for log_type, count in stats['logs_by_type'].most_common(8):  # Limit to top 8
+                        types.append(log_type)
+                        counts.append(count)
+                    
+                    ax.bar(types, counts)
+                    ax.set_xlabel('Log Type')
+                    ax.set_ylabel('Count')
+                    ax.set_title('Log Distribution by Type')
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                else:
+                    ax.text(0.5, 0.5, "No log type data available", ha='center', va='center')
+                    
+            elif viz_type == "alert_severity":
+                # Create alert severity pie chart
+                if 'alerts_by_severity' in stats and stats['alerts_by_severity']:
+                    labels = []
+                    sizes = []
+                    for severity, count in stats['alerts_by_severity'].items():
+                        labels.append(severity)
+                        sizes.append(count)
+                    
+                    ax.pie(sizes, labels=labels, autopct='%1.1f%%', shadow=True, startangle=90)
+                    ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+                    ax.set_title('Alerts by Severity')
+                else:
+                    ax.text(0.5, 0.5, "No alert severity data available", ha='center', va='center')
+            
+            elif viz_type == "alerts_by_type":
+                # Create alerts by type bar chart
+                if 'alerts_by_type' in stats and stats['alerts_by_type']:
+                    alert_types = []
+                    counts = []
+                    for alert_type, count in stats['alerts_by_type'].most_common(8):  # Limit to top 8
+                        alert_types.append(alert_type)
+                        counts.append(count)
+                    
+                    ax.bar(alert_types, counts)
+                    ax.set_xlabel('Alert Type')
+                    ax.set_ylabel('Count')
+                    ax.set_title('Alerts by Type')
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                else:
+                    ax.text(0.5, 0.5, "No alert type data available", ha='center', va='center')
+            
+            elif viz_type == "timeline":
+                # Create timeline chart
+                if hasattr(self.analyzer, 'parsed_logs') and self.analyzer.parsed_logs:
+                    # Extract timestamps and convert to datetime
+                    timestamps = []
+                    for log in self.analyzer.parsed_logs:
+                        if 'timestamp' in log:
+                            try:
+                                # Assume ISO format or similar
+                                timestamps.append(datetime.fromisoformat(log['timestamp']))
+                            except (ValueError, TypeError):
+                                # Skip logs with invalid timestamps
+                                continue
+                    
+                    if timestamps:
+                        # Create timeline using histogram
+                        ax.hist(timestamps, bins=20)
+                        ax.set_xlabel('Time')
+                        ax.set_ylabel('Number of Logs')
+                        ax.set_title('Log Timeline')
+                        plt.xticks(rotation=45)
+                        plt.tight_layout()
+                    else:
+                        ax.text(0.5, 0.5, "No valid timestamps found", ha='center', va='center')
+                else:
+                    ax.text(0.5, 0.5, "No log data available", ha='center', va='center')
+            
+            # Create canvas
+            self.canvas = FigureCanvasTkAgg(self.fig, master=self.canvas_frame)
+            self.canvas.draw()
+            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+            self.status_var.set(f"Generated {viz_type} visualization")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate visualization: {str(e)}")
+    
+    def save_visualization(self):
+        if not self.fig:
+            messagebox.showwarning("Warning", "No visualization to save.")
+            return
+            
+        try:
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".png",
+                filetypes=[("PNG files", "*.png"), ("PDF files", "*.pdf"), ("All files", "*.*")],
+                initialdir=self.analyzer.config["output_directory"]
+            )
+            
+            if filename:
+                self.fig.savefig(filename, bbox_inches='tight', dpi=300)
+                messagebox.showinfo("Info", f"Visualization saved to {filename}")
+                self.status_var.set("Visualization saved")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save visualization: {str(e)}")
+    
+    # Anomalies tab functions
+    def detect_anomalies(self):
+        if not hasattr(self.analyzer, 'parsed_logs') or not self.analyzer.parsed_logs:
+            messagebox.showwarning("Warning", "No logs have been analyzed yet.")
+            return
+            
+        try:
+            time_window = self.time_window_var.get()
+            
+            self.anomalies_text.delete(1.0, tk.END)
+            self.anomalies_text.insert(tk.END, f"Detecting anomalies with {time_window} seconds time window...\n\n")
+            
+            anomalies = self.analyzer.detect_anomalies(time_window=time_window)
+            
+            if anomalies:
+                self.anomalies_text.insert(tk.END, f"Found {len(anomalies)} anomalies:\n\n")
+                for i, anomaly in enumerate(anomalies):
+                    self.anomalies_text.insert(tk.END, f"=== Anomaly {i+1} ===\n")
+                    self.anomalies_text.insert(tk.END, f"Type: {anomaly.get('type', 'Unknown')}\n")
+                    self.anomalies_text.insert(tk.END, f"Severity: {anomaly.get('severity', 'Unknown')}\n")
+                    self.anomalies_text.insert(tk.END, f"Description: {anomaly.get('description', 'No description')}\n")
+                    self.anomalies_text.insert(tk.END, f"Timestamp: {anomaly.get('timestamp', 'Unknown')}\n")
+                    
+                    if 'details' in anomaly and anomaly['details']:
+                        self.anomalies_text.insert(tk.END, "Details:\n")
+                        for key, value in anomaly['details'].items():
+                            self.anomalies_text.insert(tk.END, f"  {key}: {value}\n")
+                    
+                    self.anomalies_text.insert(tk.END, "\n")
+            else:
+                self.anomalies_text.insert(tk.END, "No anomalies detected.")
+                
+            self.status_var.set(f"Detected {len(anomalies) if anomalies else 0} anomalies")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to detect anomalies: {str(e)}")
+    
+    def correlation_analysis(self):
+        if not hasattr(self.analyzer, 'parsed_logs') or not self.analyzer.parsed_logs:
+            messagebox.showwarning("Warning", "No logs have been analyzed yet.")
+            return
+            
+        try:
+            self.anomalies_text.delete(1.0, tk.END)
+            self.anomalies_text.insert(tk.END, "Performing correlation analysis...\n\n")
+            
+            correlations = self.analyzer.correlation_analysis()
+            
+            if correlations:
+                self.anomalies_text.insert(tk.END, f"Found {len(correlations)} correlations:\n\n")
+                for i, correlation in enumerate(correlations):
+                    self.anomalies_text.insert(tk.END, f"=== Correlation {i+1} ===\n")
+                    self.anomalies_text.insert(tk.END, f"Type: {correlation.get('type', 'Unknown')}\n")
+                    self.anomalies_text.insert(tk.END, f"Strength: {correlation.get('strength', 'Unknown')}\n")
+                    self.anomalies_text.insert(tk.END, f"Description: {correlation.get('description', 'No description')}\n")
+                    
+                    if 'details' in correlation and correlation['details']:
+                        self.anomalies_text.insert(tk.END, "Details:\n")
+                        for key, value in correlation['details'].items():
+                            self.anomalies_text.insert(tk.END, f"  {key}: {value}\n")
+                    
+                    self.anomalies_text.insert(tk.END, "\n")
+            else:
+                self.anomalies_text.insert(tk.END, "No correlations found.")
+                
+            self.status_var.set(f"Found {len(correlations) if correlations else 0} correlations")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to perform correlation analysis: {str(e)}")
+
+
+def main():
+    root = tk.Tk()
+    app = LogAnalyzerGUI(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
